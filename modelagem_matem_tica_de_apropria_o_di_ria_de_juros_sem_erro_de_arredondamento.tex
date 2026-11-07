@@ -1,0 +1,431 @@
+\documentclass[11pt, a4paper]{article}
+
+\usepackage[a4paper, margin=2.3cm]{geometry}
+\usepackage{fontspec}
+\usepackage[portuguese, english, bidi=basic, provide=*]{babel}
+\babelprovide[import, onchar=ids fonts]{portuguese}
+\babelprovide[import, onchar=ids fonts]{english}
+\babelfont{rm}{Noto Sans}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage[table]{xcolor}
+\usepackage{enumitem}
+\usepackage{hyperref}
+
+\setlist[itemize]{label=-}
+
+\definecolor{navy}{HTML}{1B365D}
+\definecolor{slate}{HTML}{4A5568}
+\definecolor{lightgray}{HTML}{F7FAFC}
+\definecolor{accent}{HTML}{2B6CB0}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=navy,
+    urlcolor=accent,
+    pdftitle={Modelagem Matematica para Eliminacao de Erros de Arredondamento na Apropriacao Diaria de Juros},
+    pdfauthor={Engenharia Financeira e Core Banking}
+}
+
+\title{\textbf{\textcolor{navy}{Modelagem Matemática para Eliminação de Erros de Arredondamento na Apropriação Diária de Juros}}}
+\author{\textbf{Especificação Formal para Sistemas de Core Banking e Razão Contábil}\\Padrões de Precisão BACEN / CETIP e ABNT NBR 5891}
+\date{Outubro de 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent Este documento apresenta a formalização matemática completa para a eliminação de divergências de arredondamento e truncamento na apropriação diária de juros compostos (\textit{accrual} diário) frente ao cálculo de período fechado mensal. Demonstramos algebricamente por que a aplicação iterativa do operador de arredondamento monetário de duas casas decimais viola a associatividade da capitalização composta e introduz desvios sistemáticos. Em seguida, formulamos e provamos a equivalência exata de duas arquiteturas algorítmicas livres de código: o \textbf{Método do Diferencial de Saldo por Soma Telescópica (Estado Dual)} e o \textbf{Método de Acumulação de Resíduos Sub-Centavo (Kahan-Bresenham Financeiro)}, garantindo fechamento mensal com erro zero e conformidade estrita com as invariantes contábeis do Banco Central do Brasil (BACEN).
+\end{abstract}
+
+\vspace{0.4cm}
+\hrule
+\vspace{0.6cm}
+
+\section{Introdução e Definição Formal do Problema}
+
+Em sistemas financeiros e contábeis regidos pelas normas do Sistema Financeiro Nacional (BACEN/COSIF), coexistem duas exigências aparentemente conflitantes:
+\begin{enumerate}
+    \item \textbf{Regime de Competência Diário (\textit{Daily Accrual}):} Os juros devem ser apropriados e registrados no razão contábil (\textit{Ledger}) diariamente em moeda corrente nacional, a qual admite exclusivamente representação com $2$ casas decimais (centavos).
+    \item \textbf{Consistência de Período Fechado Mensal:} O saldo final acumulado ao término de $N_M$ dias úteis de um mês deve coincidir exatamente com a aplicação direta do produtório dos fatores diários sobre o principal inicial e sobre os fluxos intermediários.
+\end{enumerate}
+
+\subsection{Espaços Numéricos e Operadores de Quantização}
+
+Definimos dois conjuntos discretos de ponto fixo decimal (excluindo totalmente a representação binária IEEE 754, na qual constantes decimais elementares como $0{,}01_{10}$ são dízimas periódicas infinitas em base $2$):
+\begin{itemize}
+    \item \textbf{Domínio de Alta Precisão Financeira ($\mathbb{D}_8$):} Conjunto dos números racionais decimais com precisão de $8$ casas decimais, utilizado para fatores diários de capitalização e saldos internos exatos:
+    \begin{equation}
+        \mathbb{D}_8 = \left\{ k \cdot 10^{-8} \;\middle|\; k \in \mathbb{Z} \right\}
+    \end{equation}
+    \item \textbf{Domínio Monetário Contábil ($\mathbb{D}_2$):} Conjunto dos números racionais decimais com precisão de $2$ casas decimais, utilizado para lançamentos no razão contábil:
+    \begin{equation}
+        \mathbb{D}_2 = \left\{ m \cdot 10^{-2} \;\middle|\; m \in \mathbb{Z} \right\}
+    \end{equation}
+\end{itemize}
+
+Seja $\mathcal{R}_p : \mathbb{R} \to \mathbb{D}_p$ o operador de arredondamento simétrico (\textit{half-to-even}, conforme norma ABNT NBR 5891) para $p$ casas decimais. Para qualquer $x \in \mathbb{R}$, o erro local de quantização $\epsilon_p(x)$ é definido por:
+\begin{equation}
+    \mathcal{R}_p(x) = x + \epsilon_p(x), \quad \text{onde} \quad \epsilon_p(x) \in \left[- \frac{1}{2} \cdot 10^{-p},\; + \frac{1}{2} \cdot 10^{-p}\right]
+\end{equation}
+
+No caso contábil ($p = 2$), o erro diário máximo de arredondamento é limitado por $|\epsilon_2(x)| \le 0{,}005$ (meio centavo).
+
+\subsection{Fator Diário Padrão BACEN/CETIP}
+
+Dada uma taxa efetiva anual $i_a$ (expressa em base $252$ dias úteis) e um percentual de indexação $\alpha$ (por exemplo, percentual do CDI), o fator diário de capitalização no dia útil $t$, denotado por $F_t \in \mathbb{D}_8$, é obtido por:
+\begin{equation}
+    F_t = 1 + \mathcal{R}_8 \left( \left[ (1 + i_{a,t})^{\frac{1}{252}} - 1 \right] \cdot \alpha_t \right)
+\end{equation}
+
+Para uma taxa prefixada constante ao longo do mês, tem-se simplesmente $F_t = \mathcal{R}_8\left((1 + i_a)^{1/252}\right)$.
+
+\section{Teorema do Fechamento Mensal Consistente}
+
+Seja $S_0 \in \mathbb{D}_2$ o saldo principal inicial no instante $t = 0$, e seja $\Delta E_t \in \mathbb{D}_2$ o fluxo líquido externo no dia $t$ (novos aportes positivos ou amortizações negativas).
+
+\subsection{A Equação Exata de Período Fechado}
+
+Em um cálculo de período fechado de $N_M$ dias úteis, o saldo exato em alta precisão $S_{N_M}^{*} \in \mathbb{R}$ e o respectivo saldo contábil fechado $S_{N_M}^{\text{fechado}} \in \mathbb{D}_2$ são governados pela equação:
+\begin{equation}
+    S_{N_M}^{*} = S_0 \prod_{t=1}^{N_M} F_t + \sum_{k=1}^{N_M} \left( \Delta E_k \prod_{j=k+1}^{N_M} F_j \right)
+\end{equation}
+\begin{equation}
+    S_{N_M}^{\text{fechado}} = \mathcal{R}_2 \left( S_{N_M}^{*} \right)
+\end{equation}
+onde se adota a convenção de produto vazio $\prod_{j=N_M+1}^{N_M} F_j = 1$.
+
+\subsection{Demonstração da Falha do Método Diário Ingênuo}
+
+No método diário ingênuo, o sistema calcula o juro do dia aplicando $(F_t - 1)$ sobre o saldo contábil do dia anterior, arredonda imediatamente para $2$ casas decimais e descarta a fração sub-centavo. A recorrência ingênua $\tilde{S}_t \in \mathbb{D}_2$ (assumindo $\Delta E_t = 0$ para clareza da prova) é dada por:
+\begin{equation}
+    \tilde{L}_t = \mathcal{R}_2 \left( \tilde{S}_{t-1} \cdot (F_t - 1) \right) = \tilde{S}_{t-1} \cdot (F_t - 1) + \epsilon_t
+\end{equation}
+\begin{equation}
+    \tilde{S}_t = \tilde{S}_{t-1} + \tilde{L}_t = \tilde{S}_{t-1} \cdot F_t + \epsilon_t
+\end{equation}
+onde $\epsilon_t \in [-0{,}005, +0{,}005]$ é o erro introduzido no dia $t$. Expandindo a relação de recorrência de $t = 1$ até $t = N_M$:
+\begin{align}
+    \tilde{S}_1 &= S_0 F_1 + \epsilon_1 \\
+    \tilde{S}_2 &= (S_0 F_1 + \epsilon_1) F_2 + \epsilon_2 = S_0 F_1 F_2 + \epsilon_1 F_2 + \epsilon_2 \\
+    &\;\;\vdots \nonumber \\
+    \tilde{S}_{N_M} &= S_0 \prod_{t=1}^{N_M} F_t + \sum_{k=1}^{N_M} \left( \epsilon_k \prod_{j=k+1}^{N_M} F_j \right)
+\end{align}
+
+A divergência acumulada $\Delta_{\text{erro}}$ entre o fechamento mensal exato e o método diário ingênuo após $N_M$ dias é:
+\begin{equation}
+    \Delta_{\text{erro}} = S_{N_M}^{\text{fechado}} - \tilde{S}_{N_M} = \mathcal{R}_2\left(S_0 \prod_{t=1}^{N_M} F_t\right) - S_0 \prod_{t=1}^{N_M} F_t - \sum_{k=1}^{N_M} \left( \epsilon_k \prod_{j=k+1}^{N_M} F_j \right)
+\end{equation}
+
+Observa-se duas patologias matemáticas severas na Equação (10):
+\begin{enumerate}
+    \item \textbf{Acumulação Linear de Viés ($\sum \epsilon_k$):} Quando o juro diário de um contrato possui uma fração constante (por exemplo, $\text{R\$ } 4{,}234$ por dia), o erro $\epsilon_k = -0{,}004$ tem sempre o mesmo sinal todos os dias. Em $21$ dias úteis, o erro acumulado atinge $21 \times (-0{,}004) = -\text{R\$ } 0{,}084$ (oito centavos de defasagem em um único mês).
+    \item \textbf{Capitalização Indevida do Erro ($\epsilon_k \prod F_j$):} O erro cometido no dia $k$ passa a sofrer incidência dos fatores de capitalização dos dias subsequentes $j > k$, amplificando exponencialmente a divergência em prazos longos.
+\end{enumerate}
+
+\section{Solução 1: Arquitetura de Estado Dual (Soma Telescópica)}
+
+A primeira solução matemática rigorosa desacopla a variável de estado interna (mantida em alta precisão) da variável de visualização contábil (mantida em $2$ casas decimais).
+
+\subsection{Formulação das Equações de Estado}
+
+Para cada contrato ou \textit{tranche}, mantemos a evolução do saldo exato $S_t^{*} \in \mathbb{D}_8$ (ou precisão superior) e definimos o saldo contábil projetado $S_t^{\text{cont}} \in \mathbb{D}_2$:
+\begin{equation}
+    S_t^{*} = S_{t-1}^{*} \cdot F_t + \Delta E_t, \quad \text{com } S_0^{*} = S_0
+\end{equation}
+\begin{equation}
+    S_t^{\text{cont}} = \mathcal{R}_2 \left( S_t^{*} \right)
+\end{equation}
+
+O lançamento contábil de apropriação de juros do dia $t$, denotado por $L_t \in \mathbb{D}_2$, não é calculado isoladamente por produto direto, mas sim como o \textbf{operador de diferença finita de primeira ordem} sobre os saldos contábeis arredondados, descontado o fluxo externo do dia:
+\begin{equation}
+    L_t = S_t^{\text{cont}} - S_{t-1}^{\text{cont}} - \Delta E_t = \mathcal{R}_2(S_t^{*}) - \mathcal{R}_2(S_{t-1}^{*}) - \Delta E_t
+\end{equation}
+
+\subsection{Prova de Erro Zero no Fechamento Mensal}
+
+Calculando o saldo no razão contábil no fim do mês ($S_{N_M}^{\text{razão}}$), que é composto pelo saldo inicial mais a soma de todas as apropriações diárias $L_t$ e fluxos externos $\Delta E_t$:
+\begin{align}
+    S_{N_M}^{\text{razão}} &= S_0 + \sum_{t=1}^{N_M} \left( L_t + \Delta E_t \right) \\
+    &= S_0 + \sum_{t=1}^{N_M} \left( \mathcal{R}_2(S_t^{*}) - \mathcal{R}_2(S_{t-1}^{*}) - \Delta E_t + \Delta E_t \right) \\
+    &= S_0 + \sum_{t=1}^{N_M} \left( \mathcal{R}_2(S_t^{*}) - \mathcal{R}_2(S_{t-1}^{*}) \right)
+\end{align}
+
+Expandindo o somatório telescópico:
+\begin{align}
+    S_{N_M}^{\text{razão}} &= S_0 + \left[ \mathcal{R}_2(S_1^{*}) - \mathcal{R}_2(S_0^{*}) \right] + \left[ \mathcal{R}_2(S_2^{*}) - \mathcal{R}_2(S_1^{*}) \right] + \dots + \left[ \mathcal{R}_2(S_{N_M}^{*}) - \mathcal{R}_2(S_{N_M-1}^{*}) \right] \nonumber \\
+    &= S_0 - \mathcal{R}_2(S_0^{*}) + \mathcal{R}_2(S_{N_M}^{*})
+\end{align}
+
+Como $S_0 \in \mathbb{D}_2$, temos $\mathcal{R}_2(S_0^{*}) = S_0$. Logo, os termos iniciais cancelam-se identicamente:
+\begin{equation}
+    S_{N_M}^{\text{razão}} = \mathcal{R}_2(S_{N_M}^{*}) = S_{N_M}^{\text{fechado}} \quad \blacksquare
+\end{equation}
+
+Fica assim provado que a soma das apropriações diárias em centavos iguala-se com erro estritamente zero ao cálculo de período fechado mensal para qualquer sequência de taxas $F_t$ e aportes $\Delta E_t$.
+
+\section{Solução 2: Algoritmo de Acumulação de Resíduos Sub-Centavo}
+
+Em motores contábeis baseados na segregação explícita entre Principal ($P$), Juro Contábil Acumulado ($J^{\text{cont}}$) e Resíduo Fracionário ($R$), utiliza-se uma variante financeira do algoritmo de compensação de Kahan combinada ao erro incremental de Bresenham.
+
+\subsection{Vetor de Estado da Tranche e Recorrência Diária}
+
+Cada tranche no dia $t$ é representada pela tupla de estado $(P_t, J_t^{\text{cont}}, R_t)$, onde:
+\begin{itemize}
+    \item $P_t \in \mathbb{D}_2$: Principal contábil líquido;
+    \item $J_t^{\text{cont}} \in \mathbb{D}_2$: Juro já apropriado no razão contábil (com 2 casas decimais);
+    \item $R_t \in \mathbb{D}_{16}$: Resíduo sub-centavo retido (não apropriado contabilmente no dia $t$, porém integrante da base econômica de capitalização), satisfazendo $|R_t| \le 0{,}005$.
+\end{itemize}
+
+No início da operação ($t=0$), temos $P_0 = S_0$, $J_0^{\text{cont}} = 0{,}00$ e $R_0 = 0$. Para cada dia útil $t = 1, 2, \dots, N_M$, executam-se os quatro passos algébricos a seguir:
+
+\begin{enumerate}
+    \item \textbf{Reconstrução da Base Econômica Exata ($B_{t-1}^{*}$):}
+    \begin{equation}
+        B_{t-1}^{*} = P_{t-1} + J_{t-1}^{\text{cont}} + R_{t-1}
+    \end{equation}
+    \item \textbf{Cálculo do Juro Bruto do Dia e Incorporação do Resíduo Anterior ($j_t^{\text{disp}}$):}
+    \begin{equation}
+        j_t^{\text{bruto}} = B_{t-1}^{*} \cdot (F_t - 1)
+    \end{equation}
+    \begin{equation}
+        j_t^{\text{disp}} = j_t^{\text{bruto}} + R_{t-1}
+    \end{equation}
+    \item \textbf{Quantização do Lançamento Contábil Diário ($L_t \in \mathbb{D}_2$):}
+    \begin{equation}
+        L_t = \mathcal{R}_2 \left( j_t^{\text{disp}} \right)
+    \end{equation}
+    \item \textbf{Atualização do Resíduo Sub-Centavo e dos Saldos Contábeis:}
+    \begin{equation}
+        R_t = j_t^{\text{disp}} - L_t
+    \end{equation}
+    \begin{equation}
+        J_t^{\text{cont}} = J_{t-1}^{\text{cont}} + L_t
+    \end{equation}
+\end{enumerate}
+
+\subsection{Prova de Invariância por Indução Matemática}
+
+\textbf{Teorema (Invariante Fundamental de Conservação de Valor):} Em qualquer dia $t \ge 0$, a soma das componentes da tupla $(P_t, J_t^{\text{cont}}, R_t)$ preserva exatamente o saldo composto fechado $S_t^{*}$ sem perda de precisão:
+\begin{equation}
+    P_t + J_t^{\text{cont}} + R_t = S_t^{*}
+\end{equation}
+
+\textbf{Demonstração por Indução:}
+\begin{itemize}
+    \item \textit{Caso Base ($t = 0$):} $P_0 + J_0^{\text{cont}} + R_0 = S_0 + 0 + 0 = S_0^{*}$. Verdadeiro.
+    \item \textit{Passo Indutivo:} Suponha que a propriedade seja válida em $t - 1$, isto é, $B_{t-1}^{*} = P_{t-1} + J_{t-1}^{\text{cont}} + R_{t-1} = S_{t-1}^{*}$. No dia $t$ (sem aporte externo, $P_t = P_{t-1}$), somamos as componentes atualizadas:
+    \begin{align}
+        P_t + J_t^{\text{cont}} + R_t &= P_{t-1} + \left( J_{t-1}^{\text{cont}} + L_t \right) + \left( j_t^{\text{disp}} - L_t \right) \\
+        &= P_{t-1} + J_{t-1}^{\text{cont}} + j_t^{\text{disp}} \\
+        &= P_{t-1} + J_{t-1}^{\text{cont}} + j_t^{\text{bruto}} + R_{t-1} \\
+        &= \left( P_{t-1} + J_{t-1}^{\text{cont}} + R_{t-1} \right) + B_{t-1}^{*} \cdot (F_t - 1) \\
+        &= B_{t-1}^{*} + B_{t-1}^{*} \cdot (F_t - 1) \\
+        &= B_{t-1}^{*} \cdot F_t = S_{t-1}^{*} \cdot F_t = S_t^{*} \quad \blacksquare
+    \end{align}
+\end{itemize}
+
+Como $|R_t| = |j_t^{\text{disp}} - \mathcal{R}_2(j_t^{\text{disp}})| \le 0{,}005$, segue-se imediatamente que $P_t + J_t^{\text{cont}} = S_t^{*} - R_t = \mathcal{R}_2(S_t^{*})$, provando que o Método de Acumulação de Resíduos produz exatamente a mesma sequência de lançamentos contábeis $L_t$ que a Arquitetura de Estado Dual.
+
+\section{Tratamento de Eventos Intermediários: Amortizações e Resgates}
+
+Quando ocorre uma amortização ou resgate parcial $A_t \in \mathbb{D}_2$ no dia $t$ (após a apropriação do juro $L_t$ daquele dia), é fundamental definir o destino do resíduo $R_t$ para não violar a conservação de valor.
+
+Seja $S_t^{\text{cont}} = P_t + J_t^{\text{cont}}$ o saldo contábil disponível antes da amortização, e seja $\theta_t \in (0, 1]$ a fração resgatada da posição:
+\begin{equation}
+    \theta_t = \frac{A_t}{P_t + J_t^{\text{cont}}}
+\end{equation}
+
+\begin{enumerate}
+    \item \textbf{Liquidação Total ($\theta_t = 1$):} O contrato é encerrado e o resíduo sub-centavo $R_t$ é zerado ($R_t^{\text{pós}} = 0$), visto que o valor contábil exigível já se encontra perfeitamente arredondado em $P_t + J_t^{\text{cont}} = \mathcal{R}_2(S_t^{*})$.
+    \item \textbf{Amortização Parcial ($0 < \theta_t < 1$):} O principal e os juros contábeis são reduzidos conforme a regra contratual de imputação do pagamento, e o resíduo sub-centavo deve ser ajustado proporcionalmente ou reancorado ao novo saldo contábil:
+    \begin{equation}
+        S_t^{*,\text{pós}} = S_t^{*} - A_t \implies R_t^{\text{pós}} = S_t^{*,\text{pós}} - \left( P_t^{\text{pós}} + J_t^{\text{cont, pós}} \right) = R_t
+    \end{equation}
+    Note pela Equação (33) que, como $A_t \in \mathbb{D}_2$ é um valor exato em centavos, subtrair $A_t$ tanto do saldo exato $S_t^{*}$ quanto do saldo contábil $P_t + J_t^{\text{cont}}$ \textbf{mantém o resíduo $R_t$ inalterado} para o dia seguinte, preservando a continuidade matemática perfeita.
+\end{enumerate}
+
+\section{Exemplo Numérico Passo a Passo e Simulação Comparativa}
+
+Para demonstrar o funcionamento concreto das equações, consideremos os seguintes parâmetros de uma aplicação financeira indexada a $100\%$ do CDI:
+\begin{itemize}
+    \item \textbf{Principal Inicial ($S_0$):} $\text{R\$ } 10.000{,}00$
+    \item \textbf{Taxa Efetiva Anual ($i_a$):} $11{,}2451\%$ ao ano (base $252$ dias úteis; nota: para $i_a = 11{,}25\%$ exatos tem-se $\mathcal{R}_8((1+0{,}1125)^{1/252}) = 1{,}00042314$)
+    \item \textbf{Fator Diário ($F_t$ em $8$ casas decimais):}
+    \begin{equation}
+        F_t = \mathcal{R}_8 \left( (1 + i_a)^{\frac{1}{252}} \right) = \mathcal{R}_8 \left( 1{,}0004229714... \right) = 1{,}00042297
+    \end{equation}
+\end{itemize}
+
+No primeiro dia ($t=1$), o juro exato gerado é $10.000{,}00 \times 0{,}00042297 = \text{R\$ } 4{,}22970000$.
+\begin{itemize}
+    \item \textbf{Método Ingênuo (sobre principal fixo):} Arredonda $\text{R\$ } 4{,}2297$ para $\tilde{L}_1 = \text{R\$ } 4{,}23$ e descarta o resíduo sub-centavo e o efeito composto diário, apropriando estaticamente $\text{R\$ } 4{,}23$ todos os dias ($\text{R\$ } 10.088{,}83$ ao final de $21$ dias úteis, contra $\text{R\$ } 10.089{,}20$ exatos).
+    \item \textbf{Método com Resíduo ($R_t$):} No dia $1$, apropria $L_1 = \text{R\$ } 4{,}23$ e armazena o resíduo negativo $R_1 = 4{,}2297 - 4{,}23 = -0{,}00030000$. Nos dias subsequentes, à medida que o juro bruto diário cresce pela capitalização sobre $S_{t-1}^{*}$ e se soma ao resíduo $R_{t-1}$, o algoritmo ajusta dinamicamente os lançamentos para $\text{R\$ } 4{,}24$ (a partir do dia $4$), $\text{R\$ } 4{,}25$ (dia $10$) até $\text{R\$ } 4{,}27$ (dia $21$), mantendo $|R_t| \le 0{,}005$ e fechando exatamente em $\text{R\$ } 10.089{,}20$.
+\end{itemize}
+
+\begin{table}[h!]
+\centering
+\caption{Evolução Diária Comparativa ($\text{Principal } S_0 = \text{R\$ } 10.000{,}00$, $F_t = 1{,}00042297$, $21$ Dias Úteis)}
+\vspace{0.2cm}
+\footnotesize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabularx}{\textwidth}{@{}c *{7}{>{\raggedleft\arraybackslash}X}@{}}
+\toprule
+\textbf{Dia} & \textbf{Saldo Exato} & \textbf{Juro Disp.} & \textbf{Lanç. Exato} & \textbf{Resíduo} & \textbf{Saldo Comp.} & \textbf{Saldo Ing.} & \textbf{Erro Ing.} \\
+$t$ & $S_t^{*} \in \mathbb{D}_8$ & $j_t^{\text{disp}}$ & $L_t \in \mathbb{D}_2$ & $R_t$ & $S_t^{\text{cont}} \in \mathbb{D}_2$ & $\tilde{S}_t \in \mathbb{D}_2$ & $(\tilde{S}_t - S_t^{\text{cont}})$ \\
+\midrule
+0  & 10.000,00000000 & 0,00000000 & 0,00 & 0,00000000  & 10.000,00 & 10.000,00 & 0,00 \\
+1  & 10.004,22970000 & 4,22970000 & 4,23 & -0,00030000 & 10.004,23 & 10.004,23 & 0,00 \\
+2  & 10.008,46118904 & 4,23118904 & 4,23 & +0,00118904 & 10.008,46 & 10.008,46 & 0,00 \\
+3  & 10.012,69446787 & 4,23446787 & 4,23 & +0,00446787 & 10.012,69 & 10.012,69 & 0,00 \\
+4  & 10.016,92953725 & 4,23953725 & 4,24 & -0,00046275 & 10.016,93 & 10.016,92 & -0,01 \\
+5  & 10.021,16639793 & 4,23639793 & 4,24 & -0,00360207 & 10.021,17 & 10.021,15 & -0,02 \\
+6  & 10.025,40505068 & 4,23505068 & 4,24 & -0,00494932 & 10.025,41 & 10.025,38 & -0,03 \\
+7  & 10.029,64549625 & 4,23549625 & 4,24 & -0,00450375 & 10.029,65 & 10.029,61 & -0,04 \\
+\rowcolor{lightgray}
+8  & 10.033,88773541 & 4,23773541 & 4,24 & -0,00226459 & 10.033,89 & 10.033,84 & -0,05 \\
+9  & 10.038,13176892 & 4,24176892 & 4,24 & +0,00176892 & 10.038,13 & 10.038,07 & -0,06 \\
+10 & 10.042,37759755 & 4,24759755 & 4,25 & -0,00240245 & 10.042,38 & 10.042,30 & -0,08 \\
+21 & 10.089,20040594 & 4,27040594 & 4,27 & +0,00040594 & \textbf{10.089,20} & \textbf{10.088,83} & \textbf{-0,37} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Para visualizar um caso de divergência severa por truncamento/arredondamento sub-centavo no método ingênuo, analisemos na Tabela 2 uma tranche de $\text{R\$ } 1.000{,}00$ com o mesmo fator $F_t = 1{,}00042297$, onde o juro diário inicial é $\text{R\$ } 0{,}42297$ (perdendo $\approx 0{,}003$ Real por dia no arredondamento simples para $\text{R\$ } 0{,}42$).
+
+\begin{table}[h!]
+\centering
+\caption{Divergência Severa na Tranche de $\text{R\$ } 1.000{,}00$ ($F_t = 1{,}00042297$ ao longo de $21$ Dias Úteis)}
+\vspace{0.2cm}
+\footnotesize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabularx}{\textwidth}{@{}c *{7}{>{\raggedleft\arraybackslash}X}@{}}
+\toprule
+\textbf{Dia} & \textbf{Saldo Exato} & \textbf{Juro Disp.} & \textbf{Lanç. Comp.} & \textbf{Resíduo} & \textbf{Saldo Comp.} & \textbf{Saldo Ing.} & \textbf{Erro Ing.} \\
+$t$ & $S_t^{*} \in \mathbb{D}_8$ & $j_t^{\text{disp}}$ & $L_t \in \mathbb{D}_2$ & $R_t$ & $S_t^{\text{cont}} \in \mathbb{D}_2$ & $\tilde{S}_t \in \mathbb{D}_2$ & $(\tilde{S}_t - S_t^{\text{cont}})$ \\
+\midrule
+1  & 1.000,42297000 & 0,42297000 & 0,42 & +0,00297000 & 1.000,42 & 1.000,42 & 0,00 \\
+\rowcolor{lightgray}
+2  & 1.000,84611890 & 0,42611890 & \textbf{0,43} & -0,00388110 & 1.000,85 & 1.000,84 & \textbf{-0,01} \\
+3  & 1.001,26944679 & 0,41944679 & 0,42 & -0,00055321 & 1.001,27 & 1.001,26 & -0,01 \\
+4  & 1.001,69295372 & 0,42295372 & 0,42 & +0,00295372 & 1.001,69 & 1.001,68 & -0,01 \\
+\rowcolor{lightgray}
+5  & 1.002,11663979 & 0,42663979 & \textbf{0,43} & -0,00336021 & 1.002,12 & 1.002,10 & \textbf{-0,02} \\
+10 & 1.004,23775975 & 0,42775975 & \textbf{0,43} & -0,00224025 & 1.004,24 & 1.004,20 & \textbf{-0,04} \\
+15 & 1.006,36336935 & 0,42336935 & 0,42 & +0,00336935 & 1.006,36 & 1.006,30 & \textbf{-0,06} \\
+\rowcolor{lightgray}
+21 & 1.008,92004059 & 0,43004059 & \textbf{0,43} & +0,00004059 & \textbf{1.008,92} & \textbf{1.008,82} & \textbf{-0,10} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\noindent \textbf{Verificação do Fechamento Mensal Direto ($t = 21$) para $S_0 = \text{R\$ } 1.000{,}00$:}
+\begin{equation}
+    S_{21}^{\text{fechado}} = \mathcal{R}_2 \left( 1.000{,}00 \times (1{,}00042297)^{21} \right) = \mathcal{R}_2 \left( 1.008{,}92004059 \right) = \text{R\$ } 1.008{,}92
+\end{equation}
+
+Enquanto o método ingênuo encerra o mês em $\text{R\$ } 1.008{,}82$ (acumulando um erro de $-\text{R\$ } 0{,}10$ em uma única conta), o algoritmo com acumulação de resíduo dispara compensações automáticas de $\text{R\$ } 0{,}43$ nos $10$ dias $t \in \{2, 5, 8, 10, 12, 14, 16, 18, 19, 21\}$ ($11 \times \text{R\$ } 0{,}42 + 10 \times \text{R\$ } 0{,}43 = \text{R\$ } 8{,}92$), encerrando o mês exatamente em $\text{R\$ } 1.008{,}92$ (erro zero).
+
+\section{Reconciliação entre Razão Analítico e Sintético (Invariante COSIF)}
+
+Quando uma instituição financeira possui $M$ contratos ativos ($i = 1, 2, \dots, M$), o saldo contábil de cada contrato $i$ no dia $t$ é $S_{i,t}^{\text{cont}} = \mathcal{R}_2(S_{i,t}^{*})$.
+
+Pela não-linearidade do operador de arredondamento $\mathcal{R}_2$, a soma dos saldos arredondados das carteiras analíticas não é necessariamente igual ao arredondamento da soma dos saldos exatos:
+\begin{equation}
+    \sum_{i=1}^{M} \mathcal{R}_2(S_{i,t}^{*}) \neq \mathcal{R}_2 \left( \sum_{i=1}^{M} S_{i,t}^{*} \right)
+\end{equation}
+
+Para preservar a \textbf{Invariante de Reconciliação Contábil ($I_2$)} exigida pelo BACEN — segundo a qual a conta sintética do Balancete deve igualar exatamente o somatório das contas analíticas ($\text{Subledger}$) — o lançamento diário no Razão Geral Sintético ($L_{t}^{\text{sintético}}$) deve ser definido exclusivamente pela agregação \textit{bottom-up} dos lançamentos analíticos já compensados:
+\begin{equation}
+    L_{t}^{\text{sintético}} = \sum_{i=1}^{M} L_{i,t} = \sum_{i=1}^{M} \left( \mathcal{R}_2(S_{i,t}^{*}) - \mathcal{R}_2(S_{i,t-1}^{*}) - \Delta E_{i,t} \right)
+\end{equation}
+
+Dessa forma, garante-se simultaneamente:
+\begin{enumerate}
+    \item \textbf{Exatidão Individual por Contrato:} Cada cliente tem seu extrato diário de $2$ casas decimais convergindo com erro zero para a fórmula fechada mensal da sua própria operação;
+    \item \textbf{Integridade do Razão Contábil Geral:} O balancete contábil sintético da instituição fecha com erro zero em relação à soma de todos os contratos analíticos em qualquer dia útil $t$.
+\end{enumerate}
+
+\section{Sistema Formal de Invariantes ($I_1$ a $I_6$)}
+
+Para que o motor de apropriação de juros seja considerado matematicamente íntegro e auditável perante as normas do Banco Central do Brasil (BACEN/COSIF), seis invariantes formais de estado devem ser satisfeitas ao final do processamento de cada dia útil $t \in \{1, 2, \dots, N_M\}$ e para qualquer conjunto de contratos $i \in \{1, \dots, M\}$ e tranches $k \in \{1, \dots, K_i\}$.
+
+\subsection{Invariante $I_1$: Conservação Econômica Exata e Fechamento Mensal}
+
+A soma do principal contábil, do juro contábil acumulado e do resíduo sub-centavo deve reproduzir sem perda de precisão a equação fechada de capitalização composta em qualquer instante $t$, garantindo que o saldo contábil iguale o arredondamento direto do saldo exato:
+\begin{equation}
+    I_1(i, t): \quad P_{i,t} + J_{i,t}^{\text{cont}} + R_{i,t} = S_{i,0} \prod_{u=1}^{t} F_u + \sum_{m=1}^{t} \left( \Delta E_{i,m} \prod_{v=m+1}^{t} F_v \right) = S_{i,t}^{*}
+\end{equation}
+\begin{equation}
+    \text{Corolário Contábil de } I_1: \quad S_{i,t}^{\text{cont}} = P_{i,t} + J_{i,t}^{\text{cont}} = \mathcal{R}_2\left(S_{i,t}^{*}\right)
+\end{equation}
+
+\subsection{Invariante $I_2$: Reconciliação Analítico-Sintética (Subledger vs. General Ledger)}
+
+O saldo da conta sintética no Razão Geral (\textit{General Ledger} -- COSIF) no encerramento do dia $t$, denotado por $\mathcal{G}_t \in \mathbb{D}_2$, deve coincidir de forma estrita com o somatório dos saldos contábeis individuais das contas analíticas (\textit{Subledger}) de todos os $M$ contratos ativos:
+\begin{equation}
+    I_2(t): \quad \mathcal{G}_t = \mathcal{G}_{t-1} + L_t^{\text{sintético}} + \sum_{i=1}^{M} \Delta E_{i,t} = \sum_{i=1}^{M} S_{i,t}^{\text{cont}} = \sum_{i=1}^{M} \left( P_{i,t} + J_{i,t}^{\text{cont}} \right)
+\end{equation}
+Esta invariante proíbe que o Razão Sintético seja atualizado por aplicação direta do fator $F_t$ sobre $\mathcal{G}_{t-1}$, determinando que a variação sintética diária seja estritamente $\Delta \mathcal{G}_t = \sum_{i=1}^{M} (L_{i,t} + \Delta E_{i,t})$.
+
+\subsection{Invariante $I_3$: Confinamento Estrito do Resíduo Sub-Centavo (Estabilidade de Lyapunov)}
+
+O resíduo não apropriado $R_{i,t}$ de qualquer contrato ou tranche nunca pode divergir ou acumular mais do que meio centavo em módulo após a extração do lançamento contábil $L_{i,t}$:
+\begin{equation}
+    I_3(i, t): \quad |R_{i,t}| = \left| S_{i,t}^{*} - S_{i,t}^{\text{cont}} \right| \le \frac{1}{2} \cdot 10^{-2} = 0{,}005
+\end{equation}
+Se em qualquer verificação de auditoria $|R_{i,t}| > 0{,}005$, fica caracterizada falha de quantização no operador $\mathcal{R}_2$. Além disso, a divergência máxima teórica entre o somatório exato da carteira completa de $M$ contratos e o Razão Sintético $\mathcal{G}_t$ é cotada superiormente por:
+\begin{equation}
+    \left| \sum_{i=1}^{M} S_{i,t}^{*} - \mathcal{G}_t \right| = \left| \sum_{i=1}^{M} R_{i,t} \right| \le 0{,}005 \cdot M
+\end{equation}
+
+\subsection{Invariante $I_4$: Equilíbrio de Partidas Dobradas e Soma Telescópica}
+
+Todo lançamento diário de apropriação $L_{i,t} \in \mathbb{D}_2$ gera um par simétrico de partidas dobradas (Débito em Despesa de Captação / Crédito em Provisão de Passivo, ou Débito em Ativo de Crédito / Crédito em Receita de Juros) tal que a soma algébrica dos débitos ($\mathcal{D}_{i,t}$) e créditos ($\mathcal{C}_{i,t}$) é identicamente nula em cada dia $t$, e sua integral discreta no tempo reconstrói a variação patrimonial líquida:
+\begin{equation}
+    I_4(t): \quad \sum_{i=1}^{M} \left( \mathcal{D}_{i,t} - \mathcal{C}_{i,t} \right) = 0 \quad \text{e} \quad \sum_{t=1}^{N_M} L_{i,t} = S_{i,N_M}^{\text{cont}} - S_{i,0} - \sum_{t=1}^{N_M} \Delta E_{i,t}
+\end{equation}
+
+\subsection{Invariante $I_5$: Aditividade e Isolamento de Múltiplas Tranches}
+
+Quando um contrato $i$ é subdividido em $K_i$ tranches independentes $(P_{i,k,t}, J_{i,k,t}^{\text{cont}}, R_{i,k,t}, \tau_{i,k})$ para controle de alíquotas regressivas de impostos (onde $\tau_{i,k}$ é a data de início da $k$-ésima tranche), o saldo contábil do contrato deve ser a soma exata dos saldos contábeis de suas tranches, mantendo o isolamento de cada resíduo $R_{i,k,t}$:
+\begin{equation}
+    I_5(i, t): \quad P_{i,t} = \sum_{k=1}^{K_i} P_{i,k,t}, \quad J_{i,t}^{\text{cont}} = \sum_{k=1}^{K_i} J_{i,k,t}^{\text{cont}}, \quad L_{i,t} = \sum_{k=1}^{K_i} L_{i,k,t}
+\end{equation}
+
+\subsection{Invariante $I_6$: Limitação Fiscal e Monotonicidade Tributária (IOF e IRRF)}
+
+Em eventos de resgate ou apropriação de provisão tributária sobre a tranche $k$ no prazo decorrido $\Delta d = t - \tau_{i,k}$, o Imposto sobre Operações Financeiras ($\text{IOF}_{i,k,t} \in \mathbb{D}_2$) e o Imposto de Renda Retido na Fonte ($\text{IR}_{i,k,t} \in \mathbb{D}_2$) devem incidir exclusivamente sobre o rendimento contábil efetivamente apropriado $J_{i,k,t}^{\text{cont}} \ge 0$, respeitando o teto legal de não-confisco do principal:
+\begin{equation}
+    I_6(i, k, t): \quad 0 \le \text{IOF}_{i,k,t} \le J_{i,k,t}^{\text{cont}} \quad \text{e} \quad \text{IR}_{i,k,t} = \mathcal{T}_2\left( \gamma_{\text{IR}}(\Delta d) \cdot \left( J_{i,k,t}^{\text{cont}} - \text{IOF}_{i,k,t} \right) \right)
+\end{equation}
+onde $\mathcal{T}_2 : \mathbb{R} \to \mathbb{D}_2$ representa o operador fiscal de truncamento na segunda casa decimal (conforme legislação da Receita Federal do Brasil) e $\gamma_{\text{IR}}(\Delta d) \in \{22{,}5\%, 20{,}0\%, 17{,}5\%, 15{,}0\%\}$ é a alíquota regressiva correspondente ao prazo $\Delta d$. A Invariante $I_6$ garante que o resíduo sub-centavo $R_{i,k,t}$ nunca gere base tributável fantasma antes de sua efetiva materialização contábil em $J_{i,k,t}^{\text{cont}}$.
+
+\begin{table}[h!]
+\centering
+\caption{Quadro-Resumo das Invariantes Formais do Motor de Apropriação}
+\vspace{0.2cm}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}c p{3.8cm} X@{}}
+\toprule
+\textbf{Cód.} & \textbf{Invariante} & \textbf{Condição Matemática de Conformidade Diária} \\
+\midrule
+$I_1$ & Conservação Econômica & $P_{i,t} + J_{i,t}^{\text{cont}} + R_{i,t} = S_{i,t}^{*}$ e $S_{i,t}^{\text{cont}} = \mathcal{R}_2(S_{i,t}^{*})$ \\
+\rowcolor{lightgray}
+$I_2$ & Reconciliação COSIF & $\mathcal{G}_t = \sum_{i=1}^{M} S_{i,t}^{\text{cont}}$ e $L_t^{\text{sintético}} = \sum_{i=1}^{M} L_{i,t}$ \\
+$I_3$ & Confinamento do Resíduo & $|R_{i,t}| \le 0{,}005$ para todo contrato $i$ e dia útil $t$ \\
+\rowcolor{lightgray}
+$I_4$ & Fechamento Telescópico & $\sum_{t=1}^{N_M} L_{i,t} = \mathcal{R}_2(S_{i,N_M}^{*}) - S_{i,0} - \sum_{t=1}^{N_M} \Delta E_{i,t}$ \\
+$I_5$ & Aditividade de Tranches & $S_{i,t}^{\text{cont}} = \sum_{k=1}^{K_i} (P_{i,k,t} + J_{i,k,t}^{\text{cont}})$ com $|R_{i,k,t}| \le 0{,}005$ \\
+\rowcolor{lightgray}
+$I_6$ & Integridade Tributária & $\text{IOF}_{i,k,t} + \text{IR}_{i,k,t} \le J_{i,k,t}^{\text{cont}}$ (Proibição de confisco do Principal $P_{i,k,t}$) \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\end{document}

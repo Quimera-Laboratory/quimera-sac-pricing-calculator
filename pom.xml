@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>org.quimera.labs.financial</groupId>
+    <artifactId>quimera-sac-pricing-calculator</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <name>Quimera SAC Pricing Calculator (Java + Q128)</name>
+    <description>
+        Calculadora de Precificação, Apropriação Contábil (COSIF/BACEN) e Marcação a Mercado (MtM)
+        para contratos SAC em qualquer base de contagem de dias (252 DU, ACT/360, ACT/365)
+        utilizando aritmética categórica de 128 bits (Q128 / QuimeraCategoricalDecimal).
+    </description>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <maven.compiler.release>17</maven.compiler.release>
+        <quimera.q128.version>2.0.0-RELEASE</quimera.q128.version>
+        <jmh.version>1.37</jmh.version>
+        <junit.version>5.10.2</junit.version>
+        <exec.mainClass>org.quimera.labs.financial.sac.SacPricingCliApp</exec.mainClass>
+    </properties>
+
+    <repositories>
+        <repository>
+            <id>github</id>
+            <name>Quimera-Laboratory GitHub Packages Maven Repo</name>
+            <url>https://maven.pkg.github.com/Quimera-Laboratory/quimera-q128-financial</url>
+        </repository>
+    </repositories>
+
+    <dependencies>
+        <!-- Motor Algébrico-Categórico Q128 (QuimeraCategoricalDecimal, QDec128, QDec128ColumnarVector) -->
+        <dependency>
+            <groupId>org.quimera.labs.financial</groupId>
+            <artifactId>quimera-q128-financial_2.12</artifactId>
+            <version>${quimera.q128.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.scala-lang</groupId>
+            <artifactId>scala-reflect</artifactId>
+            <version>2.12.18</version>
+        </dependency>
+
+        <!-- OpenJDK JMH 1.37 para Benchmarks de Latência e GC Profile (Q128 vs BigDecimal) -->
+        <dependency>
+            <groupId>org.openjdk.jmh</groupId>
+            <artifactId>jmh-core</artifactId>
+            <version>${jmh.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.openjdk.jmh</groupId>
+            <artifactId>jmh-generator-annprocess</artifactId>
+            <version>${jmh.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- JUnit 5 para testes de paridade nas bases 252, 360 e 365 -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+                <configuration>
+                    <release>17</release>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>org.openjdk.jmh</groupId>
+                            <artifactId>jmh-generator-annprocess</artifactId>
+                            <version>${jmh.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.2.0</version>
+            </plugin>
+        </plugins>
+    </build>
+</project>
